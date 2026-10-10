@@ -1,0 +1,8 @@
+{
+  "name": "claritycheck",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "See why a student answer is wrong, not just that it is.",
+  "license": "MIT",
+  "scripts": { "start": "node api/classify.js" }
+}

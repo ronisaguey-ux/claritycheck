@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClarityCheck — why is the answer wrong?</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{--ink:#12151c;--mut:#5b6472;--line:#e3e7ee;--bg:#f7f8fb;--acc:#2b6cff;--warn:#c1121f;--good:#0f9d58}
+  *{box-sizing:border-box} body{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg);margin:0}
+  header{padding:22px 24px;border-bottom:1px solid var(--line);background:#fff}
+  h1{margin:0;font-size:20px} .sub{color:var(--mut);margin-top:4px}
+  main{max-width:980px;margin:0 auto;padding:24px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:18px}
+  label{display:block;font-weight:600;margin-bottom:6px}
+  input[type=text],textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit;background:#fff}
+  textarea{min-height:120px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+  .row{display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  .hint{color:var(--mut);font-size:13px}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;background:#eef3ff;color:#1a49c0}
+  .tag.correct{background:#e8f7ee;color:var(--good)} .tag.conceptual_gap{background:#fdecec;color:var(--warn)}
+  .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:18px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .lesson{background:#f2f6ff;border:1px solid #dbe6ff;border-radius:8px;padding:12px;margin-top:10px}
+  .err{color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <h1>ClarityCheck</h1>
+  <div class="sub">Upload a class's answers. See <b>why</b> each one is wrong — not just that it is.</div>
+</header>
+<main>
+  <div class="card">
+    <label for="q">The question</label>
+    <input id="q" type="text" value="Solve 2x + 5 = 13">
+    <label for="a" style="margin-top:14px">Student answers — one per line (or upload a CSV with one answer per row)</label>
+    <textarea id="a">x = 4
+x = -4
+x = 9
+x = 18
+I divided both sides by 2</textarea>
+    <div class="row">
+      <button id="go">Analyze</button>
+      <input id="file" type="file" accept=".csv,.txt">
+      <span class="hint" id="status"></span>
+    </div>
+  </div>
+
+  <div class="grid" id="out" hidden>
+    <div class="card">
+      <label>Diagnosis per answer</label>
+      <table><thead><tr><th>#</th><th>Answer</th><th>Misconception</th><th>Explanation</th></tr></thead>
+      <tbody id="rows"></tbody></table>
+      <div class="lesson" id="lesson" hidden></div>
+    </div>
+    <div class="card">
+      <label>Top misconceptions in this class</label>
+      <canvas id="chart" height="220"></canvas>
+    </div>
+  </div>
+</main>
+<script>
+const API = window.CLARITYCHECK_API || "/api/classify";
+const $ = (s) => document.querySelector(s);
+let chart;
+
+$("#file").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const text = await f.text();
+  const lines = text.split(/\r?\n/).map(s => s.replace(/^"|"$/g, "").trim()).filter(Boolean);
+  const start = /^(answer|response|text)$/i.test(lines[0] || "") ? 1 : 0;
+  $("#a").value = lines.slice(start).join("\n");
+});
+
+$("#go").addEventListener("click", async () => {
+  const question = $("#q").value.trim();
+  const answers = $("#a").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (!answers.length) return;
+  $("#go").disabled = true; $("#status").textContent = `Analyzing ${answers.length} answers…`;
+  try {
+    const res = await fetch(API, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, answers }) });
+    if (!res.ok) throw new Error(await res.text());
+    render(await res.json(), answers);
+    $("#status").textContent = "Done.";
+  } catch (e) {
+    $("#status").innerHTML = '<span class="err">Error: ' + e.message.slice(0, 160) + "</span>";
+  } finally { $("#go").disabled = false; }
+});
+
+function render(data, answers) {
+  $("#out").hidden = false;
+  const rows = $("#rows"); rows.innerHTML = "";
+  (data.results || []).forEach((r, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i + 1}</td><td>${escapeHtml(answers[i] ?? "")}</td>
+      <td><span class="tag ${r.label}">${r.label}</span></td>
+      <td>${escapeHtml(r.explanation || "")}</td>`;
+    rows.appendChild(tr);
+  });
+  if (data.mini_lesson) { const l = $("#lesson"); l.hidden = false; l.innerHTML = "<b>Suggested mini-lesson:</b> " + escapeHtml(data.mini_lesson); }
+  const top = (data.top_misconceptions || []).filter(t => t.label !== "correct");
+  if (chart) chart.destroy();
+  chart = new Chart($("#chart"), {
+    type: "bar",
+    data: { labels: top.map(t => t.label), datasets: [{ data: top.map(t => t.count), backgroundColor: "#2b6cff" }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } }
+  });
+}
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+</script>
+</body>
+</html>
